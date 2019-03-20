@@ -264,8 +264,6 @@ bool MP1Node::handleJoinRequest(void *env, char *data, int size) {
         return false;
     }
 
-//    vector<MemberListEntry> memberList = memberNode->memberList;
-
     Address newNodeAddress;
     MessageHdr* msg = (MessageHdr*) data;
 
@@ -321,6 +319,12 @@ bool MP1Node::handleMembershipUpdate(void *env, char *data, int size) {
 
 //    vector<MemberListEntry> memberList = memberNode->memberList;
     int receivedMemberListSize = (size - sizeof(MessageHdr))/(sizeof(MemberListEntry)+1);
+//
+//    char static vectorsize[1000];
+//    sprintf(vectorsize, "Received memberlist size %d", receivedMemberListSize);
+//    log->LOG(&memberNode->addr, vectorsize);
+
+
     vector<MemberListEntry> receivedMemberList;
     int copied = 0;
     while(copied < receivedMemberListSize) {
@@ -353,15 +357,12 @@ bool MP1Node::handleMembershipUpdate(void *env, char *data, int size) {
         vector<MemberListEntry>::iterator current_it = find(id, port);
 
         if (current_it == memberNode->memberList.end()) {
-            log->LOG(&memberNode->addr, "new node added through membership update");
             MemberListEntry memberListEntry(id, port, heartbeat, par->getcurrtime());
             memberNode->memberList.push_back(memberListEntry);
             log->logNodeAdd(&memberNode->addr, &nodeAddress);
-        } else {
-            if ((par->getcurrtime() - current_it->gettimestamp()) < memberNode->pingCounter and current_it->getheartbeat() < heartbeat) {
-                current_it->settimestamp(par->getcurrtime());
-                current_it->setheartbeat(heartbeat);
-            }
+        } else if ((current_it->getheartbeat() < heartbeat)) {
+            current_it->settimestamp(par->getcurrtime());
+            current_it->setheartbeat(heartbeat);
         }
     }
     return true;
@@ -372,8 +373,6 @@ bool MP1Node::handleMembershipUpdate(void *env, char *data, int size) {
 	 *    - If the node is new: Add it to your membership list, log it
 	 *    - If the node is not new and not failed and the received membership list has newer heartbeat: update corresponding membership entry
      */
-
-
 }
 
 vector<MemberListEntry>::iterator MP1Node::find(int id, short port) {
@@ -405,29 +404,34 @@ void MP1Node::nodeLoopOps() {
 	 *    Log the removed cleanup nodes
 	 * 2. Propagate your membership list
 	 */
-	
+
+    if (memberNode->pingCounter>0) {
+        memberNode->pingCounter--;
+        return;
+    }
+    memberNode->pingCounter = TFAIL;
+
+
     memberNode->heartbeat += 1;
     memberNode->memberList.begin()->setheartbeat(memberNode->heartbeat);
     memberNode->memberList.begin()->settimestamp(par->getcurrtime());
 
     vector<MemberListEntry>::iterator it;
 
-    for (it = memberNode->memberList.begin()+1; it < memberNode->memberList.end(); ++it) {
+    for (it = memberNode->memberList.begin()+1; it !=memberNode->memberList.end(); ) {
         Address nodeAddress;
         memset(&nodeAddress, 0, sizeof(Address));
         *(int *)(&nodeAddress.addr) = it->getid();
         *(short *)(&nodeAddress.addr[4]) = it->getport();
 
-        if ((par->getcurrtime() - it->gettimestamp()) >= memberNode->timeOutCounter) {
-
-            char static vectorsize[1000];
-            sprintf(vectorsize, "Current time %lu Last updated time %lu timeout %d", par->getcurrtime(), it->gettimestamp(), memberNode->timeOutCounter);
-            log->LOG(&memberNode->addr, vectorsize);
-
-            this->log->logNodeRemove(&memberNode->addr, &nodeAddress);
-            memberNode->memberList.erase(it);
+        if ((par->getcurrtime() - it->gettimestamp()) > TREMOVE) {
+            log->logNodeRemove(&memberNode->addr, &nodeAddress);
+            it = memberNode->memberList.erase(it);
+        } else {
+            ++it;
         }
     }
+
 
     size_t msgsize = sizeof(MessageHdr) + memberNode->memberList.size()*(sizeof(MemberListEntry) + 1);
     MessageHdr *msg = (MessageHdr *) malloc(msgsize * sizeof(char));
@@ -439,11 +443,13 @@ void MP1Node::nodeLoopOps() {
         copied = copied + 1;
     }
 
-    char static vectorsize[1000];
-    sprintf(vectorsize, "Sending membership update message with #entries %lu", memberNode->memberList.size());
-    log->LOG(&memberNode->addr, vectorsize);
+//    char static vectorsize[1000];
+//    sprintf(vectorsize, "Send memberlist size %d", copied);
+//    log->LOG(&memberNode->addr, vectorsize);
+    int send = 0;
 
     for (it = memberNode->memberList.begin()+1; it != memberNode->memberList.end(); ++it) {
+//        log->LOG(&memberNode->addr, "Sending message");
         MemberListEntry memberListEntry = *it;
         int id = memberListEntry.getid();
         int port = memberListEntry.getport();
@@ -454,8 +460,12 @@ void MP1Node::nodeLoopOps() {
         *(short *)(&nodeAddress.addr[4]) = port;
 //        if ((par->getcurrtime() - memberListEntry.gettimestamp()) < memberNode->pingCounter) {
             emulNet->ENsend(&memberNode->addr, &nodeAddress, (char *)msg, msgsize);
-        //}
+            send+=1;
+//        }
     }
+//    char static vectorsize2[1000];
+//    sprintf(vectorsize2, "Message sent to %d", send);
+//    log->LOG(&memberNode->addr, vectorsize2);
     free(msg);
     return;
 }
